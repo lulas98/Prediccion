@@ -1,0 +1,270 @@
+---
+title: "Colgate vs Crest"
+author: "Luis Vaciero"
+date: "21/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Cargamos las librerías necesarias
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(openxlsx)
+library(skimr)
+library(fpp2)
+library(ggplot2)
+library(zoo)
+library(ggfortify)
+library(tseries)
+require(forecast)
+require(xts)
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(TSA)
+library(Hmisc)
+library(astsa)
+library(tsoutliers)
+library(normtest)
+```
+
+
+## Marcamos la base de datos
+
+```{r }
+library(readxl)
+data <- read_excel('data.xlsx')
+View(data)
+```
+
+
+### Indicamos las semanas
+
+```{r}
+data$Date <- as.Date(paste(data$Year, data$Week, 1, sep = "-"), "%Y-%U-%u")
+data <- dplyr::select(data, -Year, -Week)
+```
+
+
+### Summary 
+
+```{r}
+skim(data)
+```
+
+
+## Dividimos la serie en 2 (Colgate y Crest).
+
+```{r , echo=FALSE}
+colgate <- ts(data$Colgate, start=1958,frequency = 52)
+crest <- ts(data$Crest, start = 1958, frequency =52)
+
+```
+
+#### Convertimos los datos.
+
+```{r}
+acolgate <- as.zoo(colgate)
+acrest <- as.zoo(crest)
+
+```
+
+
+#### Visualizamos ambas series
+
+```{r , echo=FALSE}
+autoplot(acolgate)+ggtitle("Cuota de Colgate ")+ xlab("Semanas") + ylab("Colgate")
+autoplot(acrest) + ggtitle("Cuota de Crest") + xlab("Semanas") + ylab("Crest")
+```
+
+
+# Test Dickey-Fuller
+
+##### Test Dickey-Fuller (La Prueba de Dickey-Fuller busca determinar la existencia o no de raíces unitarias en una serie de tiempo. La hipótesis nula de esta prueba es que existe una raíz unitaria en la serie.)
+
+
+```{r, echo=FALSE, warning=FALSE}
+adf.test(acolgate)
+adf.test(acrest)
+```
+
+##### Ambos valores están cerca de superar el margen de significación marcado, pero sin sobrepasarlo, por lo que concluimos que existe estacionalidad. 
+
+
+
+#### Eliminamos las 16 semanas del año 1963, para las dos cuotas de mercado.
+
+```{r}
+cOmit=16                      
+
+nObsColgate=length(acolgate)
+nObsCrest= length(acrest)
+```
+
+
+
+### Seleccionamos el training set
+
+
+```{r}
+colgatetrain <- window(acolgate, start=index(acolgate[1]),end = index(acolgate[nObsColgate- cOmit]))
+cresttrain <- window(acrest, star= index(acrest[1]), end = index(acrest[nObsCrest-cOmit]))
+
+```
+
+
+
+# MODELO ARIMA 
+
+
+### Usamos la funcion autoarima, que realiza las transformaciones necesarias para el modelo estacionario.
+
+```{r , echo=FALSE}
+fit_colgate <- auto.arima(colgatetrain) 
+summary(fit_colgate)
+
+fit_crest <- auto.arima(cresttrain)
+summary(fit_crest)
+
+```
+
+
+# Análisis de los residuos
+
+```{r , echo=FALSE}
+ggtsdisplay(fit_colgate$residuals,
+            main = "Residuos del Modelo ARIMA: Colgate") 
+ggtsdisplay(fit_crest$residuals,
+            main = "Residuos del Modelo ARIMA: Crest") 
+```
+
+#### Se puede observar en las funciones de autocorrelación, que existen retardos fuera de las bandas de confianza,  debido a Outliers. 
+
+#### las series son estacionarias por lo que los  residuos son “ruido blanco”. Ambos modelos son ARIMA(0,1,1) y los valores AIC son muy representativos, aunque como hemos observado hay información desajustada, eso es debido a los valores atípicos.
+
+
+
+
+
+
+# Box-Ljung Test (comprueba correlaciones)
+```{r}
+Box.test(fit_colgate$residuals,lag=3, fitdf=1, type="Lj")
+
+Box.test(fit_crest$residuals,lag=3, fitdf=1, type="Lj")
+
+#los valores son superiores al p-value, por lo que no rechazamos la correlación en los datos, lo que  resulta en aleatoriedad del proceso de muestreo o independencia)
+```
+
+
+
+
+
+# Predicción
+
+#### Aplicamos forecast
+
+```{r , echo=FALSE}
+cuota.arima.colgate=forecast(fit_colgate, h=16)
+
+cuota.arima.crest=forecast(fit_crest, h=16)
+```
+
+
+```{r}
+summary(cuota.arima.colgate)
+summary(cuota.arima.crest)
+```
+
+
+```{r , echo=FALSE}
+
+plot(cuota.arima.colgate)
+plot(cuota.arima.crest)
+
+```
+
+
+
+
+
+
+##  Detectamos Outliers
+
+```{r , echo=FALSE}
+detectAO(fit_colgate) 
+detectAO(fit_crest) 
+
+detectIO(fit_colgate) 
+detectIO(fit_crest)
+```
+ El  AO detectado en 135 es el impulso explicado por el comunicado hecho el 1 de agosto de 1960, cuando el Consejo de Terapéutica Dental de la American Dental Association (ADA) aprobó a Crest como una “ayuda importante en cualquier programa de higiene dental”.Los restantes, ambos 136 y 138 pueden interpretarse como efecto rebote,  sin justicacion clara.
+
+
+
+## ARIMAX
+
+#### Realizamos el modelo arimax con los datos obtenidos con el modelo ARIMA
+```{r , echo=FALSE}
+arimax_colgate <- arimax(as.double(acolgate), 
+                         order = c(0,1,1),
+                         xtransf = data.frame(seqx = 1*(seq(acolgate) ),
+                                              seqy = 1*(seq(acolgate))),
+                         transfer = list(c(0,0), c(1,0)),
+                         method = "ML")
+arimax_colgate
+```
+
+### Introducimos los AOs dentro del modelo Arimax.
+
+```{r , echo=FALSE}
+arimax_crest <- arimax(as.double(acrest), 
+                       order = c(0,1,1),
+                       xtransf = data.frame(seqx = 1*(seq(acrest) >= 135 ),
+                                            seqy = 1*(seq(acrest) )),
+                       xreg = data.frame(I136 = 1*(seq(acrest) == 136),
+                               I138 = 1*(seq(acrest) == 138)),
+                       transfer = list(
+                         c(0,0),
+                         c(0,0)
+                       ),
+                       method = 'ML')
+arimax_crest
+```
+### Comprobamos si hemos conseguido limpiar los outliers
+
+```{r , echo=FALSE}
+detectAO(arimax_colgate) 
+detectIO(arimax_colgate) 
+
+detectAO(arimax_crest)
+detectIO(arimax_crest)
+```
+Podemos observar como han desaparecido
+
+
+
+
+
+# Funcion de transferencia
+
+```{r , echo=FALSE}
+F_transferencia <- arimax(as.double(acolgate),
+                        order = c(0,1,1), 
+                        include.mean = TRUE,
+                        xtransf = acrest, 
+                        transfer = list(c(0,0)), 
+                        method = "ML")
+F_transferencia
+
+summary(F_transferencia)
+
+```
+
+
+
