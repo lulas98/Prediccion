@@ -1,0 +1,277 @@
+---
+title: "BMW vs Volkswagen"
+author: "Luis Vaciero"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Librerías
+
+```{r, warning = FALSE, message = FALSE }
+library(quantmod) #Package to download financials historical data 
+library(forecast)
+library(fGarch)
+library(vars)
+```
+
+
+
+### Multiplicador de Lagrange para el efecto ARCH de una serie de tiempo
+
+```{r, echo=FALSE}
+archTest <- function(rtn,m=10){
+
+  y=(rtn-mean(rtn))^2
+  T=length(rtn)
+  atsq=y[(m+1):T]
+  x=matrix(0,(T-m),m)
+  for (i in 1:m){
+    x[,i]=y[(m+1-i):(T-i)]
+  }
+  md=lm(atsq~x)
+  summary(md)
+}
+```
+Esta funcion la utilizaremos mas adelante para ver si es necesario realizar la estimación de un modelo GARCH.
+
+
+##  BMW
+#### Obtenemos los datos
+```{r, message=FALSE}
+BMWSymbol = "BMW.DE"
+BMWData <- getSymbols(BMWSymbol ,from = "2014-01-01",to = "2020-01-01", auto.assign = FALSE)
+```
+
+#### Calculamos la media aritmetica y quitamos Na
+```{r}
+xData = Ad(BMWData)
+dRentCont = dailyReturn(xData,type = 'log',leading = FALSE)
+dRentCont = na.exclude(dRentCont)
+```
+
+# Volatilidad GARCH
+
+```{r, echo = FALSE}
+plot.zoo(cbind(xData, dRentCont), main = paste(BMWSymbol), xlab = "años", ylab = c("Precio", "Rentabilidad"))
+grid(lwd = 2)
+```
+
+
+
+### Volatilidad de GARP
+
+```{r, echo=FALSE}
+plot.zoo(cbind(Ad(BMWData),dRentCont,dRentCont^2),main=paste(BMWSymbol," y  Rentabilidad"),xlab="años",ylab=c("Precio","rentabilidad","Volatilidad"))
+```
+
+
+# Test de la media
+```{r}
+t.test(dRentCont)
+```
+
+# ACF & PACF
+ACF es una función de autocorrelación (completa) que nos da valores de autocorrelación de cualquier serie con sus valores retardados.
+El PACF es una función de autocorrelación parcial. Básicamente, en lugar de encontrar correlaciones de presente con desfases como el ACF, encuentra una correlación de los residuos (que permanece después de eliminar los efectos que ya se explican por los desfases anteriores) con el siguiente valor de desfase, por lo tanto, "parcial" y no "completa", ya que eliminamos las variaciones ya encontradas antes de encontrar la siguiente correlación. 
+
+```{r}
+VolProxy=dRentCont^2 
+```
+Para determinar si existen efectos GARCH en la serie de residuos del modelo,
+realizamos las pruebas de hipótesis: Ljung-Box y Multiplicador de Lagrange para efectos
+GARCH. El resultado de estas pruebas, nos indicará si es necesario realizar la estimación
+de un modelo GARCH.
+```{r}
+tsdisplay(VolProxy) 
+
+#Ljung-Box Test 
+Box.test(VolProxy,lag=10,  type="Lj")
+Box.test(VolProxy,lag=20,  type="Lj")
+Box.test(VolProxy,lag=40,  type="Lj")
+
+#LM test
+archTest(dRentCont,20)
+```
+
+# ARCH(1)
+El modelo ARCH es la primera especificación y desarrollo del modelo
+```{r, echo = FALSE}
+m1=garchFit(~1+garch(1,0),data=dRentCont,trace=F) # Fit an ARCH(1) model
+summary(m1)
+resi=residuals(m1,standardize=T) #residuals
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals
+```
+
+# GARCH (1,1)
+Metodo generalizado y sin restricciones para la estimacion de los parametros ARCH con infinitos retardos
+```{r}
+m2=garchFit(~1+garch(1,1),data=dRentCont,trace=F) # Fit an GARCH(1,1) model
+summary(m2)
+```
+
+
+```{r, echo=FALSE}
+resi=residuals(m2,standardize=T) #residuals
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals
+#plot(m2)
+```
+
+
+```{r}
+#t-student
+m3=garchFit(~1+garch(1,1),data=dRentCont,trace=F,cond.dist="std")
+summary(m3)
+# plot(m3)0
+```
+
+
+# Volatilidad
+la volatilidad es una medida de cuánto la rentabilidad fluctúa alrededor de su media. Es por tanto una medida del riesgo.
+Por lo tanto, es importante, poder calcular esta volatilidad en cualquier instante, para analizar cómo varía con el tiempo y para predecir sus valores futuros.
+
+```{r}
+v1=volatility(m3)  # Obtain volatility
+v1=xts(v1,order.by=index(dRentCont)) #  volatility as XTS
+# plot(sqrt(252)*v1)
+```
+
+Estandarizamos los residuos y los plasmamos
+```{r echo=FALSE}
+resi=residuals(m3,standardize=T) # Standardized residuals
+resi=xts(resi,order.by=index(dRentCont)) # Standardized residuals as XTS
+tsdisplay(resi^2) #acf pacf residuals
+# plot(resi)
+```
+
+# Por ultimo predecimos la volatilidad de nuestro modelo, es decir el riesgo
+```{r, echo=FALSE}
+predict(m3) #forecast volatility
+predict(m3, n.ahead = 10, plot=TRUE, crit_val=2) #plot with 2*standard error
+predict(m3,n.ahead=20,plot=TRUE,conf=.9,nx=100) # plot 100 data with 90% confidence
+```
+
+
+# Modelo VAR (Vectores Autorregresivos)
+
+En un VAR, todas las variables son tratadas simétricamente.
+Todos ellos son modelizados como si se influyeran entre sí por igual.
+En una terminología más formal, todas las variables son ahora tratadas como “endógenas”
+
+
+```{r, include=FALSE}
+bmw=getSymbols("BMW.DE",env=NULL)
+vol=getSymbols("VWAGY",env=NULL)
+```
+
+# Rentabilidad  mensual del modelo
+```{r}
+# Generar rentabilidad mensual
+rbmw=monthlyReturn(bmw[,6])              
+rvol=monthlyReturn(vol[,6])
+```
+
+
+```{r}
+#generar vector
+vY=cbind(rbmw,rvol)
+colnames(vY)=c("BMW","VOL")
+vY=na.omit(vY)
+```
+
+
+```{r}
+#Seleccionar modelo
+VARselect(vY)
+```
+
+# Estimación
+```{r}
+model.var = VAR(vY)
+summary(model.var)
+model.var1 = VAR(vY, type = "none")
+summary(model.var1)
+```
+
+# Causalidad de granger
+probamos si una variable es útil para pronosticar otra
+```{r}
+causality(model.var1)
+
+```
+
+
+Podemos observar que no hay causalidad inmediata entre ambas
+
+# Respuesta al impulso
+
+```{r, echo=FALSE}
+model.ri=irf(model.var1)
+model.ri
+plot(model.ri)
+```
+
+La respuesta del impulso implica la manera en la que se genera un efecto en contra de la otra si una varia.
+En nuestro caso, se encuentra dentro de las lineas rojas, lo que implica un efecto contemporaneo. Si si produce una alteracion en BMW no afecta a Volkswagen.
+
+
+
+# Prediccion
+```{r}
+predict(model.var1, n.ahead = 8, ci = 0.95) 
+
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+
